@@ -2,11 +2,11 @@
 {% block content %}
 <h2>Partager un mot de passe</h2>
 {% if link_id %}
-<p>Voici votre lien temporaire :</p>
-<pre>{{ url_for('shared', link_id=link_id, _external=True) }}</pre>
+<p>Voici votre lien temporaire :</p>
+<pre>{{ request.url_root[:-1] }}{{ share_url }}</pre>
 {% else %}
 <form method="post">
-    <label>Durée de validité (secondes) :
+    <label>Durée de validité (secondes) :
         <input type="number" name="expires" value="300" min="10" max="3600">
     </label>
     <button type="submit">Générer le lien</button>
