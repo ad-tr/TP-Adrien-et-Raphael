@@ -6,9 +6,18 @@
 <body>
     <div id="content">
         <h2>Informations partagées</h2>
-        <p><strong>Label:</strong> {{ label }}</p>
-        <p><strong>Nom d'utilisateur:</strong> {{ username }}</p>
-        <p><strong>Mot de passe:</strong> {{ password }}</p>
+        {% if items %}
+            {% for item in items %}
+                <p><strong>Label:</strong> {{ item.label }}</p>
+                <p><strong>Nom d'utilisateur:</strong> {{ item.username }}</p>
+                <p><strong>Mot de passe:</strong> {{ item.password }}</p>
+                <hr>
+            {% endfor %}
+        {% else %}
+            <p><strong>Label:</strong> {{ label }}</p>
+            <p><strong>Nom d'utilisateur:</strong> {{ username }}</p>
+            <p><strong>Mot de passe:</strong> {{ password }}</p>
+        {% endif %}
         <p><em>Ce lien est à usage unique et a été détruit.</em></p>
     </div>
 </body>

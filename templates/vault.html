@@ -3,13 +3,23 @@
 <h2>Coffre-fort</h2>
 <a href="{{ url_for('add') }}">Ajouter un mot de passe</a> |
 <a href="{{ url_for('logout') }}">Déconnexion</a>
+<form id="multi-share-form" method="POST" action="{{ url_for('share_multiple') }}">
 <table>
-    <tr><th>Label</th><th>Username</th><th>Mot de passe</th><th>Actions</th></tr>
+    <tr>
+        <th><input type="checkbox" id="select-all"></th>
+        <th>Label</th>
+        <th>Username</th>
+        <th>Mot de passe</th>
+        <th>Catégories</th>
+        <th>Actions</th>
+    </tr>
     {% for item in passwords %}
     <tr>
+        <td><input type="checkbox" name="selected_ids" value="{{ item.id }}"></td>
         <td>{{ item.label }}</td>
         <td>{{ item.username }}</td>
         <td>{{ item.password }}</td>
+        <td>{{ item.category }}</td>
         <td>
             <a href="{{ url_for('delete', id=item.id) }}">Supprimer</a> |
             <a href="{{ url_for('share', id=item.id) }}">Partager</a>
@@ -17,4 +27,15 @@
     </tr>
     {% endfor %}
 </table>
+<button type="submit">Partager la sélection</button>
+</form>
+
+<script>
+document.getElementById('select-all').addEventListener('change', function() {
+    let checkboxes = document.querySelectorAll('input[name="selected_ids"]');
+    for (let box of checkboxes) {
+        box.checked = this.checked;
+    }
+});
+</script>
 {% endblock %}

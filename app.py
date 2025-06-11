@@ -1,26 +1,25 @@
 import hashlib
 import os
 import base64
+import re
 import sqlite3
 import time
 import json
 from datetime import timedelta
+import bcrypt
 from flask import Flask, render_template, request, redirect, url_for, session, flash, abort
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from cryptography.fernet import Fernet
 import secrets
 import string
-
 app = Flask(__name__)
 app.secret_key = os.urandom(32)
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(minutes=10)
 login_manager = LoginManager(app)
 DB_PATH = "vault.db"
 
-
 def get_db():
     return sqlite3.connect(DB_PATH)
-
 
 def init_db():
     with get_db() as conn:
@@ -29,18 +28,14 @@ def init_db():
             id INTEGER PRIMARY KEY, username TEXT UNIQUE, password TEXT)''')
         c.execute('''CREATE TABLE IF NOT EXISTS passwords (
             id INTEGER PRIMARY KEY, user_id INTEGER, username TEXT, label TEXT,
-            token BLOB, FOREIGN KEY(user_id) REFERENCES users(id))''')
+            token BLOB, category TEXT, FOREIGN KEY(user_id) REFERENCES users(id))''')
         c.execute('''CREATE TABLE IF NOT EXISTS shares (
             id INTEGER PRIMARY KEY, link_id TEXT, token BLOB, expires_at INTEGER)''')
-
-
 init_db()
-
 
 class User(UserMixin):
     def __init__(self, id_, username):
         self.id, self.username = id_, username
-
 
 @login_manager.user_loader
 def load_user(user_id):
@@ -50,49 +45,39 @@ def load_user(user_id):
         row = c.fetchone()
         return User(*row) if row else None
 
-
 def get_user(username):
     with get_db() as conn:
         c = conn.cursor()
         c.execute("SELECT id, username, password FROM users WHERE username = ?", (username,))
         return c.fetchone()
 
-
 def create_fernet_key(password):
-    """Crée une clé Fernet directement à partir du mot de passe utilisateur"""
     key_bytes = hashlib.sha256(password.encode()).digest()
     return base64.urlsafe_b64encode(key_bytes)
 
-
 def encrypt_password_fernet(password, user_password):
-    """Chiffrement avec Fernet"""
     key = create_fernet_key(user_password)
     f = Fernet(key)
     return f.encrypt(password.encode())
 
-
 def decrypt_password_fernet(encrypted_data, user_password):
-    """Déchiffrement avec Fernet"""
     try:
         key = create_fernet_key(user_password)
         f = Fernet(key)
         return f.decrypt(encrypted_data).decode()
     except Exception:
         return None
-
-
 @app.route("/", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
         username, password = request.form["username"], request.form["password"]
         user = get_user(username)
-        if user and user[2] == password:
+        if user and bcrypt.checkpw(password.encode(), user[2]):
             login_user(User(user[0], user[1]))
             session["user_password"] = password
             return redirect(url_for("vault"))
         flash("Identifiants invalides.")
     return render_template("login.html")
-
 
 @app.route("/register", methods=["GET", "POST"])
 def register():
@@ -102,13 +87,12 @@ def register():
             flash("Utilisateur déjà existant.")
         else:
             with get_db() as conn:
-                conn.execute("INSERT INTO users (username, password) VALUES (?, ?)",
-                             (username, password))
+                hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
+                conn.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, hashed))
                 conn.commit()
             flash("Inscription réussie. Connectez-vous.")
             return redirect(url_for("login"))
     return render_template("login.html", register=True)
-
 
 @app.route("/logout")
 @login_required
@@ -117,42 +101,42 @@ def logout():
     logout_user()
     return redirect(url_for("login"))
 
-
 @app.route("/vault")
 @login_required
 def vault():
     with get_db() as conn:
         c = conn.cursor()
-        c.execute("SELECT id, token, username, label FROM passwords WHERE user_id = ?", (current_user.id,))
+        c.execute("SELECT id, token, username, label, category FROM passwords WHERE user_id = ?", (current_user.id,))
         items = c.fetchall()
     passwords = []
     user_password = session.get("user_password")
 
     for item in items:
         decrypted = decrypt_password_fernet(item[1], user_password)
+        print(decrypted)
+        print(user_password)
+        print(item[1])
         if decrypted:
-            passwords.append({"id": item[0], "username": item[2], "label": item[3], "password": decrypted})
+            passwords.append({"id": item[0], "username": item[2], "label": item[3],"category": item[4], "password": decrypted})
         else:
-            passwords.append({"id": item[0], "username": item[2], "label": item[3], "password": "***"})
+            passwords.append({"id": item[0], "username": item[2], "label": item[3],"category": item[4], "password": "***"})
 
     return render_template("vault.html", passwords=passwords)
-
 
 @app.route("/add", methods=["GET", "POST"])
 @login_required
 def add():
     if request.method == "POST":
-        label, pwd, username = request.form["label"], request.form["password"], request.form["username"]
+        label, pwd, username, category = request.form["label"], request.form["password"], request.form["username"], request.form["category"]
         user_password = session.get("user_password")
         token = encrypt_password_fernet(pwd, user_password)
 
         with get_db() as conn:
-            conn.execute("INSERT INTO passwords (user_id, username, label, token) VALUES (?, ?, ?, ?)",
-                         (current_user.id, username, label, token))
+            conn.execute("INSERT INTO passwords (user_id, username, label, token, category) VALUES (?, ?, ?, ?, ?)",
+                         (current_user.id, username, label, token, category))
             conn.commit()
         return redirect(url_for("vault"))
     return render_template("add.html")
-
 
 @app.route("/delete/<int:id>")
 @login_required
@@ -162,14 +146,12 @@ def delete(id):
         conn.commit()
     return redirect(url_for("vault"))
 
-
 @app.route("/generate")
 @login_required
 def generate():
     alphabet = string.ascii_letters + string.digits + string.punctuation
     pwd = ''.join(secrets.choice(alphabet) for _ in range(16))
     return {"password": pwd}
-
 
 @app.route("/share/<int:id>", methods=["GET", "POST"])
 @login_required
@@ -197,40 +179,79 @@ def share(id):
                 "label": row[2]
             }
 
-            # Génération d'une clé temporaire pour ce partage
             temp_key = base64.urlsafe_b64encode(os.urandom(32))
             f = Fernet(temp_key)
 
-            # Chiffrement des données avec JSON au lieu de str()
             encrypted_data = f.encrypt(json.dumps(share_data).encode())
-
-            # Génération du hash temporaire pour l'URL
             link_id = base64.urlsafe_b64encode(os.urandom(9)).decode().rstrip("=")
-
-            # Stockage uniquement des données chiffrées en base
             c.execute("INSERT INTO shares (link_id, token, expires_at) VALUES (?, ?, ?)",
                       (link_id, encrypted_data, int(time.time()) + expires))
             conn.commit()
 
-        # URL avec la clé en paramètre GET
         share_url = f"/shared/{link_id}?key={temp_key.decode()}"
-
         return render_template("share.html", link_id=link_id, share_url=share_url)
     return render_template("share.html", link_id=None)
 
+@app.route("/share_multiple", methods=["POST"])
+@login_required
+def share_multiple():
+    ids = request.form.getlist("selected_ids")
+    if not ids:
+        flash("Aucune ligne sélectionnée.")
+        return redirect(url_for("vault"))
+
+    user_password = session.get("user_password")
+    shared_items = []
+
+    with get_db() as conn:
+        c = conn.cursor()
+        placeholders = ",".join("?" for _ in ids)
+        query = f"SELECT id, token, username, label FROM passwords WHERE id IN ({placeholders}) AND user_id = ?"
+        c.execute(query, (*ids, current_user.id))
+        rows = c.fetchall()
+
+        for row in rows:
+            password = re.search(r"b'([^']*)'", str(row[1]))
+            decrypted_password = decrypt_password_fernet(password.group(1), user_password)
+            if decrypted_password:
+                shared_items.append({
+                    "id": row[0],
+                    "password": decrypted_password,
+                    "username": row[2],
+                    "label": row[3]
+                })
+
+    if not shared_items:
+        flash("Erreur lors du déchiffrement des mots de passe.")
+        return redirect(url_for("vault"))
+
+    temp_key = base64.urlsafe_b64encode(os.urandom(32))
+    f = Fernet(temp_key)
+    encrypted_data = f.encrypt(json.dumps(shared_items).encode())
+    link_id = base64.urlsafe_b64encode(os.urandom(9)).decode().rstrip("=")
+    expires = 300
+    print(shared_items)
+
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute("INSERT INTO shares (link_id, token, expires_at) VALUES (?, ?, ?)",
+                  (link_id, encrypted_data, int(time.time()) + expires))
+        conn.commit()
+
+    share_url = f"/shared/{link_id}?key={temp_key.decode()}"
+    return render_template("share.html", link_id=link_id, share_url=share_url)
 
 @app.route("/shared/<link_id>")
 def shared(link_id):
-    # Récupération et validation de la clé depuis les paramètres GET
     temp_key = request.args.get('key')
 
     if not temp_key:
         flash("Clé de déchiffrement manquante")
         abort(404)
 
-    # Validation de la clé base64
     try:
-        temp_key_bytes = temp_key.encode()
+        # On décode la clé passée dans l'URL
+        temp_key_bytes = temp_key.encode('utf-8') if isinstance(temp_key, str) else temp_key
         decoded_key = base64.urlsafe_b64decode(temp_key_bytes)
         if len(decoded_key) != 32:
             raise ValueError("Clé invalide")
@@ -238,6 +259,7 @@ def shared(link_id):
         flash("Clé de déchiffrement invalide")
         abort(404)
 
+    # On va chercher le token chiffré en base
     with get_db() as conn:
         c = conn.cursor()
         c.execute("SELECT token, expires_at FROM shares WHERE link_id = ?", (link_id,))
@@ -246,28 +268,32 @@ def shared(link_id):
             flash("Lien expiré ou introuvable")
             abort(404)
 
-        # Récupération des données chiffrées
         encrypted_data = row[0]
+        # Si c'est du texte, on le convertit en bytes
+        if isinstance(encrypted_data, str):
+            encrypted_data = encrypted_data.encode('utf-8')
 
     try:
-        # Déchiffrement avec la clé récupérée des paramètres GET
+        # On déchiffre avec la clé temporaire
         f = Fernet(temp_key_bytes)
-        decrypted_data = f.decrypt(encrypted_data).decode()
+        decrypted_data = f.decrypt(encrypted_data).decode('utf-8')
+        share_data = json.loads(decrypted_data)  # Peut être une liste ou un dict
 
-        # Utilisation de JSON au lieu d'ast.literal_eval()
-        share_data = json.loads(decrypted_data)
-
-        # Suppression seulement après succès du déchiffrement
+        # On supprime le lien après usage
         with get_db() as conn:
             c = conn.cursor()
             c.execute("DELETE FROM shares WHERE link_id = ?", (link_id,))
             conn.commit()
 
+        # Si c'est un partage multiple, on attend une liste
+        if isinstance(share_data, list):
+            return render_template("shared.html", items=share_data)
+        # Sinon, on garde la compatibilité avec l'ancien format
         return render_template("shared.html",
-                               password=share_data["password"],
-                               username=share_data["username"],
-                               label=share_data["label"])
-
+                               password=share_data.get("password"),
+                               username=share_data.get("username"),
+                               label=share_data.get("label"),
+                               items=None)
     except Exception as e:
         print(f"Erreur de déchiffrement: {e}")
         flash("Impossible de déchiffrer le lien partagé")

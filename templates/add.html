@@ -3,11 +3,18 @@
 <h2>Ajouter un mot de passe</h2>
 <form method="post">
     <input type="text" name="label" placeholder="Nom du service" required>
-    <input type="text" name="username" id="username" placeholder="Mot de passe" required>
+    <input type="text" name="username" id="username" placeholder="Mail" required>
     <input type="text" name="password" id="password" placeholder="Mot de passe" required>
+    <select name="category" id="category" required>
+      <option value="" disabled selected>Choisissez une catégorie</option>
+      <option value=`Réseaux{""}Sociaux`>Réseaux sociaux</option>
+      <option value="categorie2">Catégorie 2</option>
+      <option value="categorie3">Catégorie 3</option>
+    </select>
     <button type="button" onclick="generate()">Générer</button>
     <button type="submit">Enregistrer</button>
 </form>
+<a href="{{ url_for('vault') }}">Retour</a>
 
 <script>
 function generate() {
