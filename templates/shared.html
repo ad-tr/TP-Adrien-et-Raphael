@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Mot de passe partagé</h2>
+<div class="shared-token">
+    <p>Token chiffré :</p>
+    <code>{{ token }}</code>
+    <small>Ce token expirera automatiquement après utilisation</small>
+</div>
+{% endblock %}

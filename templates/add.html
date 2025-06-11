@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Ajouter un mot de passe</h2>
+<form method="post">
+    <input type="text" name="label" placeholder="Nom du service" required>
+    <input type="text" name="username" id="username" placeholder="Mot de passe" required>
+    <input type="text" name="password" id="password" placeholder="Mot de passe" required>
+    <button type="button" onclick="generate()">Générer</button>
+    <button type="submit">Enregistrer</button>
+</form>
+
+<script>
+function generate() {
+    fetch('/generate').then(r => r.json()).then(data => {
+        document.getElementById('password').value = data.password;
+    });
+}
+</script>
+{% endblock %}
