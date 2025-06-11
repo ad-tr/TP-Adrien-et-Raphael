@@ -1,4 +1,3 @@
-import hashlib
 import os
 import base64
 import re
@@ -10,6 +9,8 @@ import bcrypt
 from flask import Flask, render_template, request, redirect, url_for, session, flash, abort
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.primitives import hashes
 import secrets
 import string
 app = Flask(__name__)
@@ -25,7 +26,7 @@ def init_db():
     with get_db() as conn:
         c = conn.cursor()
         c.execute('''CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY, username TEXT UNIQUE, password TEXT)''')
+            id INTEGER PRIMARY KEY, username TEXT UNIQUE, password TEXT, salt BLOB)''')
         c.execute('''CREATE TABLE IF NOT EXISTS passwords (
             id INTEGER PRIMARY KEY, user_id INTEGER, username TEXT, label TEXT,
             token BLOB, category TEXT, FOREIGN KEY(user_id) REFERENCES users(id))''')
@@ -48,21 +49,25 @@ def load_user(user_id):
 def get_user(username):
     with get_db() as conn:
         c = conn.cursor()
-        c.execute("SELECT id, username, password FROM users WHERE username = ?", (username,))
+        c.execute("SELECT id, username, password, salt FROM users WHERE username = ?", (username,))
         return c.fetchone()
 
-def create_fernet_key(password):
-    key_bytes = hashlib.sha256(password.encode()).digest()
+def create_fernet_key(password, salt):
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=600_000,
+    )
+    key_bytes = kdf.derive(password.encode())
     return base64.urlsafe_b64encode(key_bytes)
 
-def encrypt_password_fernet(password, user_password):
-    key = create_fernet_key(user_password)
+def encrypt_password_fernet(password, key):
     f = Fernet(key)
     return f.encrypt(password.encode())
 
-def decrypt_password_fernet(encrypted_data, user_password):
+def decrypt_password_fernet(encrypted_data, key):
     try:
-        key = create_fernet_key(user_password)
         f = Fernet(key)
         return f.decrypt(encrypted_data).decode()
     except Exception:
@@ -73,8 +78,11 @@ def login():
         username, password = request.form["username"], request.form["password"]
         user = get_user(username)
         if user and bcrypt.checkpw(password.encode(), user[2]):
+            print(user)
+            salt = user[3]
+
+            session["key"] = create_fernet_key(password, salt)
             login_user(User(user[0], user[1]))
-            session["user_password"] = password
             return redirect(url_for("vault"))
         flash("Identifiants invalides.")
     return render_template("login.html")
@@ -87,8 +95,9 @@ def register():
             flash("Utilisateur déjà existant.")
         else:
             with get_db() as conn:
+                salt = os.urandom(16)
                 hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
-                conn.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, hashed))
+                conn.execute("INSERT INTO users (username, password, salt) VALUES (?, ?, ?)", (username, hashed, salt))
                 conn.commit()
             flash("Inscription réussie. Connectez-vous.")
             return redirect(url_for("login"))
@@ -109,12 +118,11 @@ def vault():
         c.execute("SELECT id, token, username, label, category FROM passwords WHERE user_id = ?", (current_user.id,))
         items = c.fetchall()
     passwords = []
-    user_password = session.get("user_password")
+    key = session.get("key")
 
     for item in items:
-        decrypted = decrypt_password_fernet(item[1], user_password)
+        decrypted = decrypt_password_fernet(item[1], key)
         print(decrypted)
-        print(user_password)
         print(item[1])
         if decrypted:
             passwords.append({"id": item[0], "username": item[2], "label": item[3],"category": item[4], "password": decrypted})
@@ -128,8 +136,8 @@ def vault():
 def add():
     if request.method == "POST":
         label, pwd, username, category = request.form["label"], request.form["password"], request.form["username"], request.form["category"]
-        user_password = session.get("user_password")
-        token = encrypt_password_fernet(pwd, user_password)
+        key = session.get("key")
+        token = encrypt_password_fernet(pwd, key)
 
         with get_db() as conn:
             conn.execute("INSERT INTO passwords (user_id, username, label, token, category) VALUES (?, ?, ?, ?, ?)",
@@ -158,7 +166,7 @@ def generate():
 def share(id):
     if request.method == "POST":
         expires = int(request.form.get("expires", 300))
-        user_password = session.get("user_password")
+        key = session.get("key")
 
         with get_db() as conn:
             c = conn.cursor()
@@ -168,7 +176,7 @@ def share(id):
             if not row:
                 abort(404)
 
-            decrypted_password = decrypt_password_fernet(row[0], user_password)
+            decrypted_password = decrypt_password_fernet(row[0], key)
             if not decrypted_password:
                 flash("Erreur lors du déchiffrement du mot de passe.")
                 return redirect(url_for("vault"))
@@ -176,7 +184,8 @@ def share(id):
             share_data = {
                 "password": decrypted_password,
                 "username": row[1],
-                "label": row[2]
+                "label": row[2],
+                "category": row[3]
             }
 
             temp_key = base64.urlsafe_b64encode(os.urandom(32))
@@ -200,7 +209,7 @@ def share_multiple():
         flash("Aucune ligne sélectionnée.")
         return redirect(url_for("vault"))
 
-    user_password = session.get("user_password")
+    key = session.get("key")
     shared_items = []
 
     with get_db() as conn:
@@ -212,7 +221,7 @@ def share_multiple():
 
         for row in rows:
             password = re.search(r"b'([^']*)'", str(row[1]))
-            decrypted_password = decrypt_password_fernet(password.group(1), user_password)
+            decrypted_password = decrypt_password_fernet(password.group(1), key)
             if decrypted_password:
                 shared_items.append({
                     "id": row[0],
@@ -250,7 +259,6 @@ def shared(link_id):
         abort(404)
 
     try:
-        # On décode la clé passée dans l'URL
         temp_key_bytes = temp_key.encode('utf-8') if isinstance(temp_key, str) else temp_key
         decoded_key = base64.urlsafe_b64decode(temp_key_bytes)
         if len(decoded_key) != 32:
@@ -259,7 +267,6 @@ def shared(link_id):
         flash("Clé de déchiffrement invalide")
         abort(404)
 
-    # On va chercher le token chiffré en base
     with get_db() as conn:
         c = conn.cursor()
         c.execute("SELECT token, expires_at FROM shares WHERE link_id = ?", (link_id,))
@@ -269,26 +276,21 @@ def shared(link_id):
             abort(404)
 
         encrypted_data = row[0]
-        # Si c'est du texte, on le convertit en bytes
         if isinstance(encrypted_data, str):
             encrypted_data = encrypted_data.encode('utf-8')
 
     try:
-        # On déchiffre avec la clé temporaire
         f = Fernet(temp_key_bytes)
         decrypted_data = f.decrypt(encrypted_data).decode('utf-8')
-        share_data = json.loads(decrypted_data)  # Peut être une liste ou un dict
+        share_data = json.loads(decrypted_data)
 
-        # On supprime le lien après usage
         with get_db() as conn:
             c = conn.cursor()
             c.execute("DELETE FROM shares WHERE link_id = ?", (link_id,))
             conn.commit()
 
-        # Si c'est un partage multiple, on attend une liste
         if isinstance(share_data, list):
             return render_template("shared.html", items=share_data)
-        # Sinon, on garde la compatibilité avec l'ancien format
         return render_template("shared.html",
                                password=share_data.get("password"),
                                username=share_data.get("username"),
